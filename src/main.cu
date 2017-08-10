@@ -1,6 +1,12 @@
 #include "header.h"
 #include <stdio.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <sys/time.h>
+
+unsigned int threads_active = 0;
+pthread_mutex_t threads_active_mutex;
+pthread_attr_t attr;							//probly not needed here
 
 typedef struct{
 	float *alphas, *deltas, *biases, *weights, *weightGs, *output, *input;
@@ -43,6 +49,11 @@ void * back_propagation_thread(void *arg) {
 	for (unsigned int i=1; i<data->n_layers-1; i++) {
 		weight_gradient_wrap(alpha_pointers[i-1], delta_pointers[i], weightG_pointers[i], data->layer_sizes[i], data->layer_sizes[i+1]);
 	}
+
+	pthread_mutex_lock(&threads_active_mutex);
+	//computed++;
+	threads_active--;
+	pthread_mutex_unlock(&threads_active_mutex);
 
 	pthread_exit(0);
 }
@@ -93,10 +104,13 @@ int initialize_network(unsigned int n_layers, unsigned int *layer_sizes, float *
 
 int main(int argc, char **argv) {
 
-unsigned int n_layers = 3, layer_sizes[3] = {784, 15, 10}, input_size, output_size, samples = 60000, weights_size=0, biases_size=0;
+unsigned int n_layers = 3, layer_sizes[3] = {784, 15, 10}, input_size, output_size, samples = 20000, weights_size=0, biases_size=0;
 float *weights, *biases, *inputs, *outputs, *weightGs;
 input_size = layer_sizes[0];
 output_size = layer_sizes[n_layers-1];
+
+unsigned int wait_var = atoi(argv[2]);
+unsigned int nthreads = atoi(argv[1]);
 
 for (unsigned int i=0; i<n_layers-1; i++) {
 	weights_size += layer_sizes[i]*layer_sizes[i+1];
@@ -123,7 +137,7 @@ if (outputs == NULL) {
 	return -1;
 }
 
-if (read_io("/home/nterzopo/Parallel_4/BP-CUDA/data/inputs60000x784.mydata", "/home/nterzopo/Parallel_4/BP-CUDA/data/outputs60000x10.mydata", inputs, outputs, input_size, output_size, samples) != 0) {
+if (read_io("/home/nterzopo/Parallel_4/Training_Data/inputs60000x784.mydata", "/home/nterzopo/Parallel_4/Training_Data/outputs60000x10.mydata", inputs, outputs, input_size, output_size, samples) != 0) {
 	printf("Function read_io() failed.\nExiting...\n");
 	return -2;
 }
@@ -133,8 +147,6 @@ if (initialize_network(n_layers, layer_sizes, weights, biases) != 0) {
 	return -3;
 }
 
-//FROM HERE WE NEED x60000 every memory allocation
-//and a thread for each sample
 
 weightGs = (float *)malloc(samples*weights_size*sizeof(float));
 if (weightGs == NULL) {
@@ -160,7 +172,7 @@ if (deltas == NULL) {
 }
 
 thread_data samples_data[samples];
-pthread_t threads[100];
+pthread_t threads[samples];
 for (unsigned int i=0; i<samples; i++) {
 	samples_data[i].alphas = alphas+i*ad_size;
 	samples_data[i].deltas = deltas+i*ad_size;
@@ -171,11 +183,10 @@ for (unsigned int i=0; i<samples; i++) {
 	samples_data[i].input = inputs+i*input_size;
 	samples_data[i].layer_sizes = layer_sizes;
 	samples_data[i].n_layers = n_layers;
-	
 }
 printf("samples_data created.\n");
-getchar();
-//working but too many threads cause segmentation fault
+
+/*working but too many threads cause segmentation fault
 for (unsigned int i=0; i<100; i++) {
 	pthread_create(&threads[i], NULL, back_propagation_thread, &samples_data[i]);
 
@@ -185,23 +196,68 @@ for (unsigned int i=0; i<100; i++) {
 for (unsigned int i=0; i<100; i++) {
 	pthread_join(threads[i], NULL);
 	printf("Thread %u joined.\n", i);
+}*/
+if (pthread_mutex_init(&threads_active_mutex, NULL)!=0) {
+	printf("Failed to initialize mutex.\nExiting...");
+	return -10;
 }
-
-//check weight gradient
-printf("weightG21[99]:\n");
-for (unsigned int i=0; i<layer_sizes[2]; i++) {
-	for (unsigned int j=0; j<layer_sizes[1]; j++) {
-		printf("%.4f, ", weightGs[weights_size*99+784*15+i*layer_sizes[1]+j]);
+if (pthread_attr_init(&attr)!=0) {
+	printf("Failed to initialize pthread attribute.\nExiting...");
+	return -10;
+}
+if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED)!=0) {
+	printf("Failed to set detached.\nExiting...");
+	return -10;
+}
+struct timeval t1, t2;
+double elapsedTime;
+unsigned int created=0;
+printf("nthreads  = %u, wait_var = %u.\n", nthreads, wait_var);
+printf("Before while.\n");
+gettimeofday(&t1, NULL);
+while (created<samples) {
+	if (threads_active<nthreads) {
+		if (pthread_create(&threads[created], &attr, back_propagation_thread, &samples_data[created])!=0) {
+			printf("Failed to create thread.\nExiting...");
+			return -10;
+		}
+		//printf("Created thread %u.\n", created);
+		created++;
+		pthread_mutex_lock(&threads_active_mutex);
+		threads_active++;
+		pthread_mutex_unlock(&threads_active_mutex);
+		continue;
 	}
-	printf("\n");
+	usleep(wait_var);
 }
+while (threads_active>0) {
+	//printf("Waiting for all threads to finish.\n");
+	usleep(1000000);
+}
+gettimeofday(&t2, NULL);
+elapsedTime = (t2.tv_sec - t1.tv_sec)*1000;
+elapsedTime += (t2.tv_usec - t1.tv_usec)/1000;
+FILE *fp;
+fp = fopen("test.txt", "a");
+if (fp==NULL)
+	printf("could not open file.\n");
+fprintf(fp, "threads = %u, wait = %u, time = %.1f\n", nthreads, wait_var, elapsedTime);
+fclose(fp);
+printf("Finished. Took %.1fms\n", elapsedTime);
+printf("Computed %u samples: ", samples);
 printf("\n");
+//Here all weight gradients have been computed by gpu
+//if (sum_weights_wrap_test(weightGs, weights, ))
+
+
 
 free(alphas);
 free(weights);
 free(weightGs);
 free(deltas);
 free(biases);
+pthread_mutex_destroy(&threads_active_mutex);
+pthread_attr_destroy(&attr);
 
 /*
 // check if weight and bias pointers work correctly

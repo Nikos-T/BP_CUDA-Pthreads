@@ -105,9 +105,9 @@ int backward_step_wrap(float *weight, float *a, float *delta, float *delta_new, 
 	
 }
 
-int sum_weights_wrap_test(float *weightGs, float *result1, unsigned int columns, unsigned int rows, unsigned int samples) {
+//changed needs to be tested
+int sum_weights_wrap_test(float *weightGs, float *result1, unsigned int size, unsigned int samples) {
 	float *weightGs_D, *result_D;
-	unsigned int size = columns*rows;
 	unsigned int gridx = samples/1024+1;
 
 	if (cudaMalloc((void **)&weightGs_D, size*samples*sizeof(float)) != cudaSuccess) {
@@ -118,7 +118,7 @@ int sum_weights_wrap_test(float *weightGs, float *result1, unsigned int columns,
 	}
 
 	dim3 block(32, 32, 1);
-	dim3 grid(gridx, columns, rows);
+	dim3 grid(gridx, size, 1);
 	cudaMemcpy(weightGs_D, weightGs, size*samples*sizeof(float), cudaMemcpyHostToDevice);
 	
 	sum_of_1024<<<grid, block>>>(weightGs_D, result_D, size, samples);
@@ -126,6 +126,8 @@ int sum_weights_wrap_test(float *weightGs, float *result1, unsigned int columns,
 	sum_of_1024<<<grid, block>>>(result_D, result_D, size, gridx);
 	cudaMemcpy(result1, result_D, size*gridx*sizeof(float), cudaMemcpyDeviceToHost);
 	
+	cudaFree(weightGs_D);
+	cudaFree(result_D);
 	return 0;
 }
 
@@ -147,6 +149,8 @@ int gradient_descent_wrap(float *w_or_b, float *wG_or_bG, unsigned int columns, 
 	grad_desc<<<grid, block>>>(w_or_b_D, wG_or_bG_D, size, samples, heta);
 	cudaMemcpy(w_or_b, w_or_b_D, size*sizeof(float), cudaMemcpyDeviceToHost);
 
+	cudaFree(w_or_b_D);
+	cudaFree(wG_or_bG_D);
 	return 0;
 }
 
@@ -177,6 +181,9 @@ int weight_gradient_wrap(float *a, float *delta, float *weightG, /*size of a*/un
 	}
 	cudaMemcpy(weightG, weightG_D, columns*rows*sizeof(float), cudaMemcpyDeviceToHost);
 
+	cudaFree(a_D);
+	cudaFree(delta_D);
+	cudaFree(weightG_D);
 	return 0;
 
 }
